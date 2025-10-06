@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.vscode/
+models/
+*.pkl
+.env
+.idea/
+.venv/
+
+# data
+*.csv
+!sample_data.csv
+
