@@ -413,11 +413,15 @@ if uploaded_file is not None:
                 st.subheader('Per-model classification metrics')
                 st.dataframe(metrics_df)
 
+                # Option to auto-show full report for all trained models
+                show_all_reports = st.checkbox('Show full report for all trained models')
+
                 # Select a model for detailed report
                 sel = st.selectbox('Select model for detailed report', ['-- none --'] + metrics_df['Model'].tolist())
-                if sel and sel != '-- none --':
-                    y_pred_sel = preds_dict.get(sel)
-                    st.write('Classification report for', sel)
+
+                def show_model_report(name):
+                    y_pred_sel = preds_dict.get(name)
+                    st.write('Classification report for', name)
                     try:
                         cr = classification_report(y_test, y_pred_sel, zero_division=0, output_dict=False)
                         st.text(cr)
@@ -426,23 +430,35 @@ if uploaded_file is not None:
                     # show confusion matrix
                     try:
                         cm = confusion_matrix(y_test, y_pred_sel)
-                        fig = px.imshow(cm, text_auto=True, title=f'Confusion Matrix - {sel}')
+                        fig = px.imshow(cm, text_auto=True, title=f'Confusion Matrix - {name}')
                         st.plotly_chart(fig)
                     except Exception:
                         pass
                     # ROC if available
-                    if sel in probs_dict and probs_dict[sel].shape[1] == 2:
+                    if name in probs_dict and probs_dict[name].shape[1] == 2:
                         try:
-                            y_proba_sel = probs_dict[sel]
+                            y_proba_sel = probs_dict[name]
                             fpr, tpr, _ = roc_curve(y_test, y_proba_sel[:,1])
                             roc_auc_sel = auc(fpr, tpr)
                             figroc = go.Figure()
                             figroc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f'AUC={roc_auc_sel:.3f}'))
                             figroc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines', line=dict(dash='dash')))
-                            figroc.update_layout(title=f'ROC Curve - {sel}', xaxis_title='FPR', yaxis_title='TPR')
+                            figroc.update_layout(title=f'ROC Curve - {name}', xaxis_title='FPR', yaxis_title='TPR')
                             st.plotly_chart(figroc)
                         except Exception:
                             pass
+
+                if sel and sel != '-- none --':
+                    show_model_report(sel)
+
+                if show_all_reports:
+                    st.markdown('### Full reports for all trained models')
+                    for m in metrics_df['Model'].tolist():
+                        st.markdown(f'---\n**Model:** {m}')
+                        try:
+                            show_model_report(m)
+                        except Exception:
+                            st.info(f'Could not produce report for {m}')
 
             # --- Model persistence: save/load
             st.markdown("**Model persistence**")
@@ -523,9 +539,8 @@ if uploaded_file is not None:
                         pass
 
                     html = "\n".join(html_parts)
-                    b = html.encode('utf-8')
-                    href = "data:text/html;base64," + base64.b64encode(b).decode()
-                    st.markdown(f"[Download report HTML]({href})")
+                    html_bytes = html.encode('utf-8')
+                    st.download_button("Download report (HTML)", html_bytes, file_name="report.html", mime="text/html")
                 except Exception as e:
                     st.error(f"Report export failed: {e}")
 
@@ -568,7 +583,8 @@ if uploaded_file is not None:
                 df_pred = X_test.copy()
                 df_pred['Actual'] = y_test
                 df_pred['Predicted'] = y_pred
-                st.download_button("Download Predictions CSV", df_pred.to_csv(index=False), "predictions.csv")
+                csv_bytes = df_pred.to_csv(index=False).encode('utf-8')
+                st.download_button("Download Predictions CSV", csv_bytes, file_name="predictions.csv", mime="text/csv")
 
     # ---------- Inferential Statistics
     with tabs[4]:
