@@ -11,7 +11,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+import time
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
@@ -121,87 +122,296 @@ if uploaded_file is not None:
     # Ensure models directory exists for persistence
     if not os.path.exists('models'):
         os.makedirs('models')
+    # Ensure exports directory exists for server-side exports
+    if not os.path.exists('exports'):
+        os.makedirs('exports')
 
-    # ---------- EDA & Dashboard
+    # ---------- EDA & Dashboard (enhanced)
     with tabs[1]:
-        st.subheader("Exploratory Data Analysis & Dashboard")
+        st.subheader("Exploratory Data Analysis & Dashboard (All plots)")
         st.dataframe(df.describe(include='all').T)
         numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
         categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if numeric_cols:
-                num = st.selectbox("Select column (for simple plots)", numeric_cols, key='hist')
-                plot_type = st.selectbox("Plot type", ["Histogram", "Box", "Violin", "KDE (density)", "Line"], key='plot_type')
-                if plot_type == "Histogram":
-                    fig = px.histogram(df, x=num, nbins=30, marginal='box', title=f'Histogram & Boxplot - {num}')
+        st.markdown("Select plot type and configure columns/appearance. Large datasets are auto-sampled for heavy plots.")
+
+        # universal sampling safeguard
+        sample_mode = st.checkbox('Auto-sample large datasets for plotting (recommended)', value=True)
+        sample_n = st.number_input('Sample size (when sampling enabled)', min_value=100, max_value=100000, value=1000)
+        def _sample_df(df_in):
+            if not sample_mode:
+                return df_in
+            n = min(len(df_in), int(sample_n))
+            if len(df_in) > n:
+                return df_in.sample(n, random_state=42)
+            return df_in
+
+        # comprehensive plot selector
+        plot_group = st.selectbox('Plot category', ['Univariate (numeric)', 'Univariate (categorical)', 'Bivariate numeric', 'Bivariate categorical', 'Multivariate', 'Time series', 'Distribution / Density', 'Advanced (Pairplot, PCA, Clustering)'])
+
+        if plot_group == 'Univariate (numeric)':
+            if not numeric_cols:
+                st.info('No numeric columns available')
+            else:
+                col = st.selectbox('Numeric column', numeric_cols, key='uni_num')
+                ptype = st.selectbox('Plot type', ['Histogram', 'Box', 'Violin', 'KDE', 'Line', 'ECDF', 'Strip'])
+                df_plot = _sample_df(df[[col]].dropna())
+                if ptype == 'Histogram':
+                    bins = st.slider('Bins', 5, 200, 30)
+                    fig = px.histogram(df_plot, x=col, nbins=bins, marginal='box', title=f'Histogram - {col}')
                     st.plotly_chart(fig)
-                elif plot_type == "Box":
-                    fig = px.box(df, y=num, title=f'Boxplot - {num}')
+                elif ptype == 'Box':
+                    fig = px.box(df_plot, y=col, title=f'Boxplot - {col}')
                     st.plotly_chart(fig)
-                elif plot_type == "Violin":
-                    fig = px.violin(df, y=num, box=True, points='all', title=f'Violin - {num}')
+                elif ptype == 'Violin':
+                    fig = px.violin(df_plot, y=col, box=True, points='all', title=f'Violin - {col}')
                     st.plotly_chart(fig)
-                elif plot_type == "KDE (density)":
+                elif ptype == 'KDE':
                     try:
-                        sns.kdeplot(data=df[num].dropna())
-                        st.pyplot(plt)
-                        plt.clf()
+                        fig = px.density_contour(df_plot, x=col) if len(df_plot) > 1 else None
+                        if fig is not None:
+                            st.plotly_chart(fig)
+                        else:
+                            st.info('Not enough data for KDE')
                     except Exception:
-                        st.info("KDE plot failed — ensure numeric column has enough unique values")
-                elif plot_type == "Line":
-                    fig = px.line(df.reset_index(), x='index', y=num, title=f'Line plot - {num}')
+                        try:
+                            sns.kdeplot(df_plot[col])
+                            st.pyplot(plt)
+                            plt.clf()
+                        except Exception:
+                            st.info('KDE failed')
+                elif ptype == 'Line':
+                    fig = px.line(df_plot.reset_index(), x='index', y=col, title=f'Line - {col}')
                     st.plotly_chart(fig)
-        with col2:
-            if numeric_cols and len(numeric_cols) >= 2:
-                x_col = st.selectbox("Scatter: x", numeric_cols, key='xcol')
-                y_col = st.selectbox("Scatter: y", numeric_cols, index=1, key='ycol')
-                color_opt = st.selectbox("Color by (optional)", [None] + numeric_cols + categorical_cols, key='color')
-                scatter_type = st.selectbox("Scatter type", ["2D Scatter", "3D Scatter", "Pairplot"], key='scatter_type')
-                if scatter_type == "2D Scatter":
-                    fig = px.scatter(df, x=x_col, y=y_col, color=color_opt) if color_opt else px.scatter(df, x=x_col, y=y_col)
-                    st.plotly_chart(fig)
-                elif scatter_type == "3D Scatter":
-                    if len(numeric_cols) >= 3:
-                        z_col = st.selectbox("Z axis (3D)", [c for c in numeric_cols if c not in [x_col, y_col]], key='zcol')
-                        fig = px.scatter_3d(df, x=x_col, y=y_col, z=z_col, color=color_opt)
+                elif ptype == 'ECDF':
+                    try:
+                        vals = np.sort(df_plot[col].dropna())
+                        y = np.arange(1, len(vals)+1) / len(vals)
+                        fig = go.Figure(data=go.Scatter(x=vals, y=y, mode='lines'))
+                        fig.update_layout(title=f'ECDF - {col}', xaxis_title=col, yaxis_title='ECDF')
                         st.plotly_chart(fig)
-                    else:
-                        st.info("Need at least 3 numeric columns for 3D scatter")
-                elif scatter_type == "Pairplot":
+                    except Exception:
+                        st.info('ECDF failed')
+                elif ptype == 'Strip':
+                    fig = px.strip(df_plot, y=col, title=f'Strip - {col}')
+                    st.plotly_chart(fig)
+
+        elif plot_group == 'Univariate (categorical)':
+            if not categorical_cols:
+                st.info('No categorical columns available')
+            else:
+                col = st.selectbox('Categorical column', categorical_cols, key='uni_cat')
+                df_plot = _sample_df(df[[col]].dropna())
+                agg = st.selectbox('Aggregate/count', ['Count', 'Proportion', 'Top values only'])
+                counts = df_plot[col].value_counts()
+                if agg == 'Count':
+                    fig = px.bar(counts.reset_index().rename(columns={'index': col, col: 'count'}), x=col, y='count', title=f'Counts - {col}')
+                    st.plotly_chart(fig)
+                elif agg == 'Proportion':
+                    pct = counts / counts.sum()
+                    fig = px.pie(values=pct.values, names=pct.index, title=f'Proportions - {col}')
+                    st.plotly_chart(fig)
+                else:
+                    topn = st.slider('Top N', 1, min(50, len(counts)), 10)
+                    fig = px.bar(counts.head(topn).reset_index().rename(columns={'index': col, col: 'count'}), x=col, y='count', title=f'Top {topn} - {col}')
+                    st.plotly_chart(fig)
+
+        elif plot_group == 'Bivariate numeric':
+            if len(numeric_cols) < 2:
+                st.info('Need at least 2 numeric columns')
+            else:
+                x_col = st.selectbox('X', numeric_cols, key='bi_x')
+                y_col = st.selectbox('Y', [c for c in numeric_cols if c != x_col], key='bi_y')
+                hue = st.selectbox('Color by (optional)', [None] + categorical_cols + numeric_cols, key='bi_hue')
+                ptype = st.selectbox('Plot type', ['Scatter', 'Hexbin (large data)', '2D Density', 'Line', 'Regression'])
+                df_plot = _sample_df(df[[x_col, y_col] + ([hue] if hue else [])].dropna())
+                if ptype == 'Scatter':
+                    fig = px.scatter(df_plot, x=x_col, y=y_col, color=hue) if hue else px.scatter(df_plot, x=x_col, y=y_col)
+                    st.plotly_chart(fig)
+                elif ptype == 'Hexbin':
                     try:
-                        sns.pairplot(df[numeric_cols].dropna().sample(min(200, len(df))))
+                        fig = px.density_heatmap(df_plot, x=x_col, y=y_col)
+                        st.plotly_chart(fig)
+                    except Exception:
+                        st.info('Hexbin failed')
+                elif ptype == '2D Density':
+                    try:
+                        fig = px.density_contour(df_plot, x=x_col, y=y_col)
+                        st.plotly_chart(fig)
+                    except Exception:
+                        st.info('2D density failed')
+                elif ptype == 'Line':
+                    fig = px.line(df_plot, x=x_col, y=y_col, title=f'Line {x_col} vs {y_col}')
+                    st.plotly_chart(fig)
+                elif ptype == 'Regression':
+                    try:
+                        import statsmodels.api as sm
+                        Xr = sm.add_constant(df_plot[x_col])
+                        model_ = sm.OLS(df_plot[y_col], Xr).fit()
+                        st.text(str(model_.summary()))
+                    except Exception:
+                        try:
+                            sns.regplot(x=x_col, y=y_col, data=df_plot)
+                            st.pyplot(plt)
+                            plt.clf()
+                        except Exception:
+                            st.info('Regression plot failed')
+
+        elif plot_group == 'Bivariate categorical':
+            if len(categorical_cols) < 1 or len(numeric_cols) < 1:
+                st.info('Need at least one categorical and one numeric column')
+            else:
+                cat = st.selectbox('Categorical column', categorical_cols, key='bi_cat')
+                num = st.selectbox('Numeric column (aggregate)', numeric_cols, key='bi_cat_num')
+                agg = st.selectbox('Aggregate function', ['mean', 'median', 'sum', 'count'])
+                df_agg = df.groupby(cat)[num].agg(agg).reset_index()
+                fig = px.bar(df_agg, x=cat, y=num, title=f'{agg} of {num} by {cat}')
+                st.plotly_chart(fig)
+
+        elif plot_group == 'Multivariate':
+            if len(numeric_cols) < 2:
+                st.info('Need at least 2 numeric columns')
+            else:
+                selected = st.multiselect('Select numeric columns (2-6)', numeric_cols, default=numeric_cols[:3], key='multi_cols')
+                if len(selected) >= 2:
+                    try:
+                        df_plot = _sample_df(df[selected].dropna())
+                        fig = px.scatter_matrix(df_plot[selected], dimensions=selected, title='Scatter matrix')
+                        st.plotly_chart(fig)
+                    except Exception:
+                        st.info('Scatter matrix failed')
+                else:
+                    st.info('Select at least 2 columns')
+
+        elif plot_group == 'Time series':
+            # try to infer datetime columns
+            datetime_cols = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+            if not datetime_cols:
+                # try to parse any object column as datetime
+                candidates = [c for c in df.columns if df[c].dtype == object]
+                parsed = []
+                for c in candidates:
+                    try:
+                        pd.to_datetime(df[c])
+                        parsed.append(c)
+                    except Exception:
+                        pass
+                datetime_cols = parsed
+            if not datetime_cols:
+                st.info('No datetime-like columns detected')
+            else:
+                dt = st.selectbox('Datetime column', datetime_cols)
+                value = st.selectbox('Value column', numeric_cols)
+                df_ts = df[[dt, value]].dropna()
+                try:
+                    df_ts[dt] = pd.to_datetime(df_ts[dt])
+                    df_ts = df_ts.sort_values(dt)
+                    df_plot = _sample_df(df_ts)
+                    fig = px.line(df_plot, x=dt, y=value, title=f'Time series: {value} over {dt}')
+                    st.plotly_chart(fig)
+                except Exception:
+                    st.info('Time series plotting failed')
+
+        elif plot_group == 'Distribution / Density':
+            if not numeric_cols:
+                st.info('No numeric columns')
+            else:
+                col = st.selectbox('Numeric column', numeric_cols, key='dist_col')
+                overlay = st.selectbox('Overlay by (optional)', [None] + categorical_cols)
+                df_plot = _sample_df(df[[col, overlay] if overlay else [col]].dropna())
+                try:
+                    if overlay:
+                        fig = px.histogram(df_plot, x=col, color=overlay, nbins=40, marginal='rug', barmode='overlay')
+                    else:
+                        fig = px.histogram(df_plot, x=col, nbins=40, marginal='rug')
+                    st.plotly_chart(fig)
+                except Exception:
+                    st.info('Distribution plot failed')
+
+        elif plot_group == 'Advanced (Pairplot, PCA, Clustering)':
+            adv = st.selectbox('Advanced option', ['Pairplot', 'PCA (2 comps)', 'Correlation heatmap', 'KMeans clustering'])
+            if adv == 'Pairplot':
+                if len(numeric_cols) < 2:
+                    st.info('Need at least 2 numeric columns')
+                else:
+                    sel = st.multiselect('Select numeric columns for pairplot', numeric_cols, default=numeric_cols[:4])
+                    try:
+                        sns.pairplot(_sample_df(df[sel].dropna()).sample(min(200, len(df))))
                         st.pyplot(plt)
                         plt.clf()
                     except Exception:
-                        st.info("Pairplot failed or dataset too large — try sampling fewer rows")
+                        st.info('Pairplot failed')
+            elif adv == 'PCA (2 comps)':
+                if len(numeric_cols) < 2:
+                    st.info('Need at least 2 numeric columns for PCA')
+                else:
+                    comps = PCA(n_components=2).fit_transform(df[numeric_cols].fillna(0))
+                    df_pca = pd.DataFrame(comps, columns=['PC1', 'PC2'])
+                    fig = px.scatter(df_pca, x='PC1', y='PC2', title='PCA (2 components)')
+                    st.plotly_chart(fig)
+            elif adv == 'Correlation heatmap':
+                if len(numeric_cols) < 2:
+                    st.info('Need numeric columns for correlation')
+                else:
+                    corr = df[numeric_cols].corr()
+                    fig = px.imshow(corr, text_auto='.2f', title='Correlation heatmap')
+                    st.plotly_chart(fig)
+            elif adv == 'KMeans clustering':
+                if len(numeric_cols) < 2:
+                    st.info('Need numeric columns for clustering')
+                else:
+                    k = st.slider('Clusters (k)', 2, min(20, max(2, df.shape[0]//2)), 3)
+                    km = KMeans(n_clusters=k, random_state=42)
+                    dfc = df[numeric_cols].fillna(0)
+                    df['Cluster'] = km.fit_predict(dfc)
+                    fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], color='Cluster', title='KMeans clusters')
+                    st.plotly_chart(fig)
 
-        if len(numeric_cols) >= 2:
-            st.write("Correlation matrix")
-            corr = df[numeric_cols].corr()
-            fig = px.imshow(corr, text_auto='.2f', title='Correlation Heatmap')
-            st.plotly_chart(fig)
+        # small export helpers
+        exports_dir = 'exports'
+        if not os.path.exists(exports_dir):
+            os.makedirs(exports_dir)
 
-        if st.checkbox("Show PCA (2 components)"):
-            if len(numeric_cols) >= 2:
-                pca = PCA(n_components=2)
-                comps = pca.fit_transform(df[numeric_cols].fillna(0))
-                df_pca = pd.DataFrame(comps, columns=['PC1', 'PC2'])
-                fig = px.scatter(df_pca, x='PC1', y='PC2', title='PCA (2 components)')
-                st.plotly_chart(fig)
+        if st.button('Export current dataframe sample as CSV'):
+            sampled = _sample_df(df)
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            filename = f'data_sample_{timestamp}.csv'
+            server_path = os.path.join(exports_dir, filename)
+            try:
+                sampled.to_csv(server_path, index=False)
+                st.success(f'Saved server-side: {server_path}')
+                # provide download for the server-saved file
+                with open(server_path, 'rb') as f:
+                    data = f.read()
+                    st.download_button('Download saved CSV', data, file_name=filename)
+            except Exception as e:
+                st.error(f'Failed to save export: {e}')
+
+        # show available exports and models
+        try:
+            st.markdown('**Server-side exports**')
+            exports = sorted([p for p in os.listdir(exports_dir) if p.endswith('.csv')], reverse=True)
+            if exports:
+                for p in exports[:10]:
+                    st.write(p)
             else:
-                st.info("Need at least 2 numeric features for PCA")
+                st.write('No server-side exports yet')
+        except Exception:
+            pass
 
-        if st.checkbox("KMeans Clustering (preview)"):
-            if len(numeric_cols) >= 2 and df.shape[0] >= 3:
-                k = st.slider("Number of clusters", 2, min(10, max(2, df.shape[0]//2)), 3)
-                km = KMeans(n_clusters=k, random_state=42)
-                df['Cluster'] = km.fit_predict(df[numeric_cols])
-                fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], color='Cluster', title='KMeans Clusters')
-                st.plotly_chart(fig)
+        try:
+            st.markdown('**Saved models (server-side)**')
+            if os.path.exists('models'):
+                mods = sorted([p for p in os.listdir('models') if p.endswith('.pkl')], reverse=True)
+                if mods:
+                    for m in mods[:10]:
+                        st.write(m)
+                else:
+                    st.write('No saved models yet')
             else:
-                st.info("Need at least 2 numeric features and 3 rows for KMeans")
+                st.write('Models directory not found')
+        except Exception:
+            pass
 
     # ---------- Feature Selection
     with tabs[2]:
@@ -269,6 +479,13 @@ if uploaded_file is not None:
             }
             st.write("Available grids: ", list(param_grids.keys()))
 
+        # Cross-validation option
+        cv_enable = st.checkbox("Enable cross-validation (k-fold)")
+        cv_folds = st.number_input("CV folds", min_value=2, max_value=10, value=3)
+
+        # training log
+        training_log = []
+
         if st.button("Train & Compare Models"):
             models = {}
             if task_type == "Regression":
@@ -312,77 +529,123 @@ if uploaded_file is not None:
                 st.warning("No models selected to train. Please select at least one model.")
             if models:
                 progress = st.progress(0)
-            total = len(models)
-            cm_img_b64 = None
-            roc_img_b64 = None
-            for i, (name, model) in enumerate(models.items()):
-                try:
-                    if tune and name in param_grids:
-                        grid = GridSearchCV(model, param_grids[name], cv=3, n_jobs=1)
-                        grid.fit(X_train, y_train)
-                        best = grid.best_estimator_
-                        fitted_models[name] = best
-                        model_used = best
-                    else:
-                        model.fit(X_train, y_train)
-                        fitted_models[name] = model
-                        model_used = model
-
-                    y_pred = model_used.predict(X_test)
-                    preds_dict[name] = y_pred
-                    # capture probabilities if available
+                total = len(models)
+                cm_img_b64 = None
+                roc_img_b64 = None
+                model_stats = []
+                for i, (name, model) in enumerate(models.items()):
                     try:
-                        if hasattr(model_used, 'predict_proba'):
-                            probs = model_used.predict_proba(X_test)
-                            probs_dict[name] = probs
-                    except Exception:
-                        pass
-                    if task_type == "Regression":
-                        results.append([name, r2_score(y_test, y_pred), mean_squared_error(y_test, y_pred, squared=False)])
-                    else:
-                        results.append([name, accuracy_score(y_test, y_pred), f1_score(y_test, y_pred, average='weighted')])
-                        preds = y_pred
-                        # capture confusion matrix and ROC for the last classifier
-                        try:
-                            cm = confusion_matrix(y_test, preds)
-                            fig_cm = px.imshow(cm, text_auto=True, title='Confusion Matrix')
-                            cm_img = fig_cm.to_image(format='png')
-                            cm_img_b64 = base64.b64encode(cm_img).decode()
-                        except Exception:
-                            cm_img_b64 = None
+                        start_time = time.time()
+                        model_used = model
+                        if tune and name in param_grids:
+                            grid = GridSearchCV(model, param_grids[name], cv=3, n_jobs=1)
+                            grid.fit(X_train, y_train)
+                            model_used = grid.best_estimator_
+                        else:
+                            model_used.fit(X_train, y_train)
+                        fitted_models[name] = model_used
+
+                        train_time = time.time() - start_time
+
+                        # cross-validation score if enabled
+                        cv_mean = cv_std = None
+                        if cv_enable:
+                            try:
+                                scores = cross_val_score(model_used, X_encoded, y, cv=int(cv_folds))
+                                cv_mean = np.mean(scores)
+                                cv_std = np.std(scores)
+                            except Exception:
+                                cv_mean = cv_std = None
+
+                        y_pred = model_used.predict(X_test)
+                        preds_dict[name] = y_pred
+
+                        # capture probabilities if available
                         try:
                             if hasattr(model_used, 'predict_proba'):
-                                y_proba = model_used.predict_proba(X_test)
-                                if y_proba.shape[1] == 2:
-                                    fpr, tpr, _ = roc_curve(y_test, y_proba[:,1])
-                                    fig_roc = go.Figure()
-                                    fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name='ROC'))
-                                    fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines', line=dict(dash='dash')))
-                                    fig_roc.update_layout(title='ROC Curve', xaxis_title='FPR', yaxis_title='TPR')
-                                    roc_img = fig_roc.to_image(format='png')
-                                    roc_img_b64 = base64.b64encode(roc_img).decode()
+                                probs = model_used.predict_proba(X_test)
+                                probs_dict[name] = probs
                         except Exception:
-                            roc_img_b64 = None
-                except Exception as e:
-                    results.append([name, str(e), ""])
-                # safe progress percentage between 0 and 100
-                pct = int(((i+1)/total) * 100) if total > 0 else 100
-                pct = max(0, min(100, pct))
-                if 'progress' in locals():
-                    try:
-                        # use .progress to set value; wrap in try to avoid StreamlitAPIException if UI reruns
-                        progress.progress(pct)
-                    except Exception:
-                        pass
+                            pass
+
+                        if task_type == "Regression":
+                            results.append([name, r2_score(y_test, y_pred), mean_squared_error(y_test, y_pred, squared=False)])
+                            model_stats.append({'model': name, 'train_time': train_time, 'cv_mean': cv_mean, 'cv_std': cv_std, 'test_metric': r2_score(y_test, y_pred)})
+                        else:
+                            acc = accuracy_score(y_test, y_pred)
+                            f1 = f1_score(y_test, y_pred, average='weighted')
+                            results.append([name, acc, f1])
+                            preds = y_pred
+                            model_stats.append({'model': name, 'train_time': train_time, 'cv_mean': cv_mean, 'cv_std': cv_std, 'test_metric': acc, 'f1': f1})
+
+                            # capture confusion matrix and ROC for this classifier
+                            try:
+                                cm = confusion_matrix(y_test, preds)
+                                fig_cm = px.imshow(cm, text_auto=True, title=f'Confusion Matrix - {name}')
+                                cm_img = fig_cm.to_image(format='png')
+                                cm_img_b64 = base64.b64encode(cm_img).decode()
+                            except Exception:
+                                cm_img_b64 = None
+                            try:
+                                if hasattr(model_used, 'predict_proba'):
+                                    y_proba = model_used.predict_proba(X_test)
+                                    if y_proba.shape[1] == 2:
+                                        fpr, tpr, _ = roc_curve(y_test, y_proba[:,1])
+                                        fig_roc = go.Figure()
+                                        fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name='ROC'))
+                                        fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines', line=dict(dash='dash')))
+                                        fig_roc.update_layout(title=f'ROC Curve - {name}', xaxis_title='FPR', yaxis_title='TPR')
+                                        roc_img = fig_roc.to_image(format='png')
+                                        roc_img_b64 = base64.b64encode(roc_img).decode()
+                            except Exception:
+                                roc_img_b64 = None
+
+                    except Exception as e:
+                        results.append([name, str(e), ""])
+
+                    # safe progress percentage between 0 and 100
+                    pct = int(((i+1)/total) * 100) if total > 0 else 100
+                    pct = max(0, min(100, pct))
+                    if 'progress' in locals():
+                        try:
+                            # use .progress to set value; wrap in try to avoid StreamlitAPIException if UI reruns
+                            progress.progress(pct)
+                        except Exception:
+                            pass
             if 'progress' in locals():
                 try:
                     progress.empty()
                 except Exception:
                     pass
 
-            results_df = pd.DataFrame(results, columns=["Model", "Metric1", "Metric2"])
+            results_df = pd.DataFrame(results, columns=["Model", "Metric1", "Metric2"]) if len(results)>0 else pd.DataFrame()
             st.subheader("Model Comparison")
             st.dataframe(results_df)
+
+            # Show richer comparison table
+            if model_stats:
+                comp = pd.DataFrame(model_stats)
+                st.subheader('Comparison (train time, CV mean±std, test metric)')
+                st.dataframe(comp)
+
+                # choose best model by metric (only show metrics present in the comparison table)
+                available_metrics = [c for c in ['test_metric', 'f1', 'cv_mean', 'train_time'] if c in comp.columns]
+                if not available_metrics:
+                    available_metrics = comp.columns.tolist()
+                choose_metric = st.selectbox('Choose metric to pick best model', available_metrics)
+                try:
+                    best_row = comp.sort_values(by=choose_metric, ascending=False).iloc[0]
+                    st.info(f"Best model by {choose_metric}: {best_row['model']}")
+                    if st.button('Save best model'):
+                        try:
+                            bm = fitted_models[best_row['model']]
+                            save_path = os.path.join('models', f"best_{best_row['model']}.pkl")
+                            joblib.dump(bm, save_path)
+                            st.success(f"Saved best model to {save_path}")
+                        except Exception as e:
+                            st.error(f"Failed to save best model: {e}")
+                except Exception:
+                    pass
 
             # Detailed classification metrics per model
             if task_type == "Classification":
@@ -627,8 +890,11 @@ if uploaded_file is not None:
     # ---------- Reports & Export
     with tabs[6]:
         st.subheader("Dataset & Report Export")
-        if st.button("Download cleaned dataset"):
-            st.download_button("Download CSV", df.to_csv(index=False), "cleaned_dataset.csv")
+        try:
+            csv_bytes = df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download cleaned dataset (CSV)", csv_bytes, file_name="cleaned_dataset.csv", mime='text/csv')
+        except Exception:
+            st.info('Could not prepare download for cleaned dataset')
         st.info("All predictions can also be downloaded from Modeling tab.")
 
 else:
