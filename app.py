@@ -359,9 +359,16 @@ if uploaded_file is not None:
                 pct = int(((i+1)/total) * 100) if total > 0 else 100
                 pct = max(0, min(100, pct))
                 if 'progress' in locals():
-                    progress.update(pct)
+                    try:
+                        # use .progress to set value; wrap in try to avoid StreamlitAPIException if UI reruns
+                        progress.progress(pct)
+                    except Exception:
+                        pass
             if 'progress' in locals():
-                progress.empty()
+                try:
+                    progress.empty()
+                except Exception:
+                    pass
 
             results_df = pd.DataFrame(results, columns=["Model", "Metric1", "Metric2"])
             st.subheader("Model Comparison")
