@@ -570,7 +570,14 @@ if uploaded_file is not None:
                             pass
 
                         if task_type == "Regression":
-                            results.append([name, r2_score(y_test, y_pred), mean_squared_error(y_test, y_pred, squared=False)])
+                            # compute RMSE in a way compatible with multiple scikit-learn versions
+                            try:
+                                rmse = mean_squared_error(y_test, y_pred, squared=False)
+                            except TypeError:
+                                # older sklearn: compute MSE then sqrt
+                                mse = mean_squared_error(y_test, y_pred)
+                                rmse = float(np.sqrt(mse)) if mse is not None else None
+                            results.append([name, r2_score(y_test, y_pred), rmse])
                             model_stats.append({'model': name, 'train_time': train_time, 'cv_mean': cv_mean, 'cv_std': cv_std, 'test_metric': r2_score(y_test, y_pred)})
                         else:
                             acc = accuracy_score(y_test, y_pred)
