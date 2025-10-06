@@ -20,7 +20,7 @@ from sklearn.svm import SVC, SVR
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.naive_bayes import GaussianNB
 from sklearn.feature_selection import SelectKBest, f_regression, f_classif, mutual_info_classif
-from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, f1_score, roc_curve, auc, confusion_matrix
+from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, f1_score, roc_curve, auc, confusion_matrix, precision_score, recall_score, classification_report
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from scipy import stats
@@ -305,6 +305,8 @@ if uploaded_file is not None:
             results = []
             fitted_models = {}
             preds = None
+            preds_dict = {}
+            probs_dict = {}
             # If no models were selected, warn and skip training to avoid division by zero
             if len(models) == 0:
                 st.warning("No models selected to train. Please select at least one model.")
@@ -327,6 +329,14 @@ if uploaded_file is not None:
                         model_used = model
 
                     y_pred = model_used.predict(X_test)
+                    preds_dict[name] = y_pred
+                    # capture probabilities if available
+                    try:
+                        if hasattr(model_used, 'predict_proba'):
+                            probs = model_used.predict_proba(X_test)
+                            probs_dict[name] = probs
+                    except Exception:
+                        pass
                     if task_type == "Regression":
                         results.append([name, r2_score(y_test, y_pred), mean_squared_error(y_test, y_pred, squared=False)])
                     else:
@@ -373,6 +383,66 @@ if uploaded_file is not None:
             results_df = pd.DataFrame(results, columns=["Model", "Metric1", "Metric2"])
             st.subheader("Model Comparison")
             st.dataframe(results_df)
+
+            # Detailed classification metrics per model
+            if task_type == "Classification":
+                detailed = []
+                for name in results_df['Model'].tolist():
+                    y_pred_m = preds_dict.get(name)
+                    if y_pred_m is None:
+                        detailed.append([name, None, None, None, None, None])
+                        continue
+                    try:
+                        acc = accuracy_score(y_test, y_pred_m)
+                        prec = precision_score(y_test, y_pred_m, average='weighted', zero_division=0)
+                        rec = recall_score(y_test, y_pred_m, average='weighted', zero_division=0)
+                        f1 = f1_score(y_test, y_pred_m, average='weighted', zero_division=0)
+                    except Exception:
+                        acc = prec = rec = f1 = None
+                    # ROC AUC when probability for binary
+                    roc_auc = None
+                    probs = probs_dict.get(name)
+                    if probs is not None and probs.shape[1] == 2:
+                        try:
+                            fpr, tpr, _ = roc_curve(y_test, probs[:,1])
+                            roc_auc = auc(fpr, tpr)
+                        except Exception:
+                            roc_auc = None
+                    detailed.append([name, acc, prec, rec, f1, roc_auc])
+                metrics_df = pd.DataFrame(detailed, columns=['Model','Accuracy','Precision','Recall','F1','ROC_AUC'])
+                st.subheader('Per-model classification metrics')
+                st.dataframe(metrics_df)
+
+                # Select a model for detailed report
+                sel = st.selectbox('Select model for detailed report', ['-- none --'] + metrics_df['Model'].tolist())
+                if sel and sel != '-- none --':
+                    y_pred_sel = preds_dict.get(sel)
+                    st.write('Classification report for', sel)
+                    try:
+                        cr = classification_report(y_test, y_pred_sel, zero_division=0, output_dict=False)
+                        st.text(cr)
+                    except Exception:
+                        st.info('Could not produce classification report')
+                    # show confusion matrix
+                    try:
+                        cm = confusion_matrix(y_test, y_pred_sel)
+                        fig = px.imshow(cm, text_auto=True, title=f'Confusion Matrix - {sel}')
+                        st.plotly_chart(fig)
+                    except Exception:
+                        pass
+                    # ROC if available
+                    if sel in probs_dict and probs_dict[sel].shape[1] == 2:
+                        try:
+                            y_proba_sel = probs_dict[sel]
+                            fpr, tpr, _ = roc_curve(y_test, y_proba_sel[:,1])
+                            roc_auc_sel = auc(fpr, tpr)
+                            figroc = go.Figure()
+                            figroc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f'AUC={roc_auc_sel:.3f}'))
+                            figroc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines', line=dict(dash='dash')))
+                            figroc.update_layout(title=f'ROC Curve - {sel}', xaxis_title='FPR', yaxis_title='TPR')
+                            st.plotly_chart(figroc)
+                        except Exception:
+                            pass
 
             # --- Model persistence: save/load
             st.markdown("**Model persistence**")
