@@ -403,19 +403,7 @@ if uploaded_file is not None:
         except Exception:
             pass
 
-        try:
-            st.markdown('**Saved models (server-side)**')
-            if os.path.exists('models'):
-                mods = sorted([p for p in os.listdir('models') if p.endswith('.pkl')], reverse=True)
-                if mods:
-                    for m in mods[:10]:
-                        st.write(m)
-                else:
-                    st.write('No saved models yet')
-            else:
-                st.write('Models directory not found')
-        except Exception:
-            pass
+        # Saved models listing intentionally removed to keep Feature Selection focused
 
     # ---------- Feature Selection
     with tabs[2]:
