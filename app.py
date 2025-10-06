@@ -22,13 +22,10 @@ from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.naive_bayes import GaussianNB
 from sklearn.feature_selection import SelectKBest, f_regression, f_classif, mutual_info_classif
 from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, f1_score, roc_curve, auc, confusion_matrix, precision_score, recall_score, classification_report
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
 from scipy import stats
-import shap
 import matplotlib.pyplot as plt
 import seaborn as sns
-import xgboost as xgb
+# Note: removed optional heavy dependencies (shap, xgboost, PCA, KMeans)
 import warnings
 import os
 import io
@@ -329,7 +326,7 @@ if uploaded_file is not None:
                     st.info('Distribution plot failed')
 
         elif plot_group == 'Advanced (Pairplot, PCA, Clustering)':
-            adv = st.selectbox('Advanced option', ['Pairplot', 'PCA (2 comps)', 'Correlation heatmap', 'KMeans clustering'])
+            adv = st.selectbox('Advanced option', ['Pairplot', 'Correlation heatmap'])
             if adv == 'Pairplot':
                 if len(numeric_cols) < 2:
                     st.info('Need at least 2 numeric columns')
@@ -341,14 +338,6 @@ if uploaded_file is not None:
                         plt.clf()
                     except Exception:
                         st.info('Pairplot failed')
-            elif adv == 'PCA (2 comps)':
-                if len(numeric_cols) < 2:
-                    st.info('Need at least 2 numeric columns for PCA')
-                else:
-                    comps = PCA(n_components=2).fit_transform(df[numeric_cols].fillna(0))
-                    df_pca = pd.DataFrame(comps, columns=['PC1', 'PC2'])
-                    fig = px.scatter(df_pca, x='PC1', y='PC2', title='PCA (2 components)')
-                    st.plotly_chart(fig)
             elif adv == 'Correlation heatmap':
                 if len(numeric_cols) < 2:
                     st.info('Need numeric columns for correlation')
@@ -356,16 +345,7 @@ if uploaded_file is not None:
                     corr = df[numeric_cols].corr()
                     fig = px.imshow(corr, text_auto='.2f', title='Correlation heatmap')
                     st.plotly_chart(fig)
-            elif adv == 'KMeans clustering':
-                if len(numeric_cols) < 2:
-                    st.info('Need numeric columns for clustering')
-                else:
-                    k = st.slider('Clusters (k)', 2, min(20, max(2, df.shape[0]//2)), 3)
-                    km = KMeans(n_clusters=k, random_state=42)
-                    dfc = df[numeric_cols].fillna(0)
-                    df['Cluster'] = km.fit_predict(dfc)
-                    fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], color='Cluster', title='KMeans clusters')
-                    st.plotly_chart(fig)
+                # KMeans and PCA removed to keep the app lightweight
 
         # small export helpers
         exports_dir = 'exports'
@@ -458,9 +438,9 @@ if uploaded_file is not None:
 
         model_options = []
         if task_type == "Regression":
-            model_options = ["Linear Regression", "Random Forest", "Decision Tree", "XGBoost", "KNN", "SVR"]
+            model_options = ["Linear Regression", "Random Forest", "Decision Tree", "KNN", "SVR"]
         else:
-            model_options = ["Logistic Regression", "Random Forest", "Decision Tree", "XGBoost", "KNN", "SVM", "Naive Bayes"]
+            model_options = ["Logistic Regression", "Random Forest", "Decision Tree", "KNN", "SVM", "Naive Bayes"]
 
         chosen = st.multiselect("Select models to train", model_options, default=[model_options[0], model_options[1]])
 
@@ -474,8 +454,7 @@ if uploaded_file is not None:
                 'Random Forest': {'n_estimators': [50, 100], 'max_depth': [None, 5]},
                 'Decision Tree': {'max_depth': [None, 5, 10]},
                 'KNN': {'n_neighbors': [3,5]},
-                'SVM': {'C': [0.1, 1.0]},
-                'XGBoost': {'n_estimators': [50, 100], 'max_depth': [3, 6]}
+                'SVM': {'C': [0.1, 1.0]}
             }
             st.write("Available grids: ", list(param_grids.keys()))
 
@@ -497,7 +476,8 @@ if uploaded_file is not None:
                     elif m == "Decision Tree":
                         models[m] = DecisionTreeRegressor(random_state=42)
                     elif m == "XGBoost":
-                        models[m] = xgb.XGBRegressor(random_state=42)
+                        # XGBoost removed from available models (dependency may be heavy)
+                        continue
                     elif m == "KNN":
                         models[m] = KNeighborsRegressor()
                     elif m == "SVR":
@@ -511,7 +491,8 @@ if uploaded_file is not None:
                     elif m == "Decision Tree":
                         models[m] = DecisionTreeClassifier(random_state=42)
                     elif m == "XGBoost":
-                        models[m] = xgb.XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
+                        # XGBoost removed from available models (dependency may be heavy)
+                        continue
                     elif m == "KNN":
                         models[m] = KNeighborsClassifier()
                     elif m == "SVM":
@@ -628,6 +609,18 @@ if uploaded_file is not None:
             st.subheader("Model Comparison")
             st.dataframe(results_df)
 
+            # Persist results and fitted objects into session state so selecting a model
+            # for detailed reports doesn't force retraining or lose context on reruns
+            try:
+                st.session_state['fitted_models'] = fitted_models
+                st.session_state['preds_dict'] = preds_dict
+                st.session_state['probs_dict'] = probs_dict
+                st.session_state['results_df'] = results_df
+                st.session_state['model_stats'] = model_stats
+            except Exception:
+                # session state may not be writable in some environments; ignore silently
+                pass
+
             # Show richer comparison table
             if model_stats:
                 comp = pd.DataFrame(model_stats)
@@ -655,9 +648,14 @@ if uploaded_file is not None:
 
             # Detailed classification metrics per model
             if task_type == "Classification":
+                # Use session-state copies if available (so reports persist across reruns)
+                sess_preds = st.session_state.get('preds_dict', preds_dict)
+                sess_probs = st.session_state.get('probs_dict', probs_dict)
+                sess_results_df = st.session_state.get('results_df', results_df)
+
                 detailed = []
-                for name in results_df['Model'].tolist():
-                    y_pred_m = preds_dict.get(name)
+                for name in sess_results_df['Model'].tolist():
+                    y_pred_m = sess_preds.get(name)
                     if y_pred_m is None:
                         detailed.append([name, None, None, None, None, None])
                         continue
@@ -670,8 +668,8 @@ if uploaded_file is not None:
                         acc = prec = rec = f1 = None
                     # ROC AUC when probability for binary
                     roc_auc = None
-                    probs = probs_dict.get(name)
-                    if probs is not None and probs.shape[1] == 2:
+                    probs = sess_probs.get(name)
+                    if probs is not None and getattr(probs, 'shape', (0,))[1] == 2:
                         try:
                             fpr, tpr, _ = roc_curve(y_test, probs[:,1])
                             roc_auc = auc(fpr, tpr)
@@ -683,14 +681,17 @@ if uploaded_file is not None:
                 st.dataframe(metrics_df)
 
                 # Option to auto-show full report for all trained models
-                show_all_reports = st.checkbox('Show full report for all trained models')
+                show_all_reports = st.checkbox('Show full report for all trained models', key='show_all_reports')
 
-                # Select a model for detailed report
-                sel = st.selectbox('Select model for detailed report', ['-- none --'] + metrics_df['Model'].tolist())
+                # Select a model for detailed report (use a stable key to avoid rerun confusion)
+                sel = st.selectbox('Select model for detailed report', ['-- none --'] + metrics_df['Model'].tolist(), key='detailed_model_select')
 
                 def show_model_report(name):
-                    y_pred_sel = preds_dict.get(name)
+                    y_pred_sel = st.session_state.get('preds_dict', sess_preds).get(name)
                     st.write('Classification report for', name)
+                    if y_pred_sel is None:
+                        st.info('No predictions available for this model (it may have failed during training).')
+                        return
                     try:
                         cr = classification_report(y_test, y_pred_sel, zero_division=0, output_dict=False)
                         st.text(cr)
@@ -704,9 +705,10 @@ if uploaded_file is not None:
                     except Exception:
                         pass
                     # ROC if available
-                    if name in probs_dict and probs_dict[name].shape[1] == 2:
+                    probs_local = st.session_state.get('probs_dict', sess_probs).get(name)
+                    if probs_local is not None and getattr(probs_local, 'shape', (0,))[1] == 2:
                         try:
-                            y_proba_sel = probs_dict[name]
+                            y_proba_sel = probs_local
                             fpr, tpr, _ = roc_curve(y_test, y_proba_sel[:,1])
                             roc_auc_sel = auc(fpr, tpr)
                             figroc = go.Figure()
@@ -813,17 +815,7 @@ if uploaded_file is not None:
                 except Exception as e:
                     st.error(f"Report export failed: {e}")
 
-            if st.checkbox("Show SHAP / Feature Importance"):
-                if "Random Forest" in fitted_models:
-                    rf = fitted_models["Random Forest"]
-                    try:
-                        explainer = shap.TreeExplainer(rf)
-                        shap_values = explainer.shap_values(X_train)
-                        plt.figure(figsize=(8,6))
-                        shap.summary_plot(shap_values, X_train, show=False)
-                        st.pyplot(plt)
-                    except:
-                        st.info("SHAP visualization failed.")
+            # SHAP/feature-importance visualization removed to keep app lightweight
 
             if task_type == "Classification" and preds is not None:
                 st.subheader("Classification Results")
