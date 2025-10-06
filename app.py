@@ -305,7 +305,11 @@ if uploaded_file is not None:
             results = []
             fitted_models = {}
             preds = None
-            progress = st.progress(0)
+            # If no models were selected, warn and skip training to avoid division by zero
+            if len(models) == 0:
+                st.warning("No models selected to train. Please select at least one model.")
+            if models:
+                progress = st.progress(0)
             total = len(models)
             cm_img_b64 = None
             roc_img_b64 = None
@@ -351,7 +355,13 @@ if uploaded_file is not None:
                             roc_img_b64 = None
                 except Exception as e:
                     results.append([name, str(e), ""])
-                progress.update(int(((i+1)/total) * 100))
+                # safe progress percentage between 0 and 100
+                pct = int(((i+1)/total) * 100) if total > 0 else 100
+                pct = max(0, min(100, pct))
+                if 'progress' in locals():
+                    progress.update(pct)
+            if 'progress' in locals():
+                progress.empty()
 
             results_df = pd.DataFrame(results, columns=["Model", "Metric1", "Metric2"])
             st.subheader("Model Comparison")
