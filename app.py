@@ -487,6 +487,21 @@ if uploaded_file is not None:
     probs_dict = ss.get('probs_dict', {})
     results = ss.get('results', [])
 
+    # If models were trained in a previous interaction, show their comparison results here
+    if not results_df.empty:
+        st.subheader('Previous model comparison (session)')
+        try:
+            st.dataframe(results_df)
+        except Exception:
+            st.write(results_df)
+        if model_stats:
+            try:
+                comp_prev = pd.DataFrame(model_stats)
+                st.subheader('Previous detailed comparison')
+                st.dataframe(comp_prev)
+            except Exception:
+                pass
+
     if st.button("Train & Compare Models"):
             models = {}
             if task_type == "Regression":
