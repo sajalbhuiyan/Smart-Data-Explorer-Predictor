@@ -4,42 +4,46 @@
 # ============================================
 
 # --------------------
-# 1) Imports
-# --------------------
+# Imports and setup
+import os
+import base64
+import time
+import warnings
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
-import time
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.svm import SVC, SVR
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
-from sklearn.naive_bayes import GaussianNB
-from sklearn.feature_selection import SelectKBest, f_regression, f_classif, mutual_info_classif
-from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, f1_score, roc_curve, auc, confusion_matrix, precision_score, recall_score, classification_report
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
-from scipy import stats
-import shap
 import matplotlib.pyplot as plt
 import seaborn as sns
-import xgboost as xgb
-import warnings
-import os
-import io
-import base64
+import plotly.express as px
+import plotly.graph_objects as go
+
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.svm import SVR, SVC
+from sklearn.naive_bayes import GaussianNB
+from sklearn.metrics import r2_score, mean_squared_error, accuracy_score, f1_score, precision_score, recall_score, confusion_matrix, roc_curve, auc, classification_report
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.feature_selection import SelectKBest, f_regression, f_classif, mutual_info_classif
+
+import scipy.stats as stats
+
 import joblib
+try:
+    import shap
+except Exception:
+    shap = None
+try:
+    import xgboost as xgb
+except Exception:
+    xgb = None
 
-warnings.filterwarnings("ignore")
-
-# --------------------
-# 2) App Title
-# --------------------
+warnings.filterwarnings('ignore')
 st.title("📊 Smart Data Explorer & Predictor (Pro)")
 
 # --------------------
@@ -483,10 +487,19 @@ if uploaded_file is not None:
         cv_enable = st.checkbox("Enable cross-validation (k-fold)")
         cv_folds = st.number_input("CV folds", min_value=2, max_value=10, value=3)
 
-        # training log
-        training_log = []
+    # training log
+    training_log = []
 
-        if st.button("Train & Compare Models"):
+    # restore previous training outputs from session_state if available
+    ss = st.session_state
+    fitted_models = ss.get('fitted_models', {})
+    results_df = ss.get('results_df', pd.DataFrame())
+    model_stats = ss.get('model_stats', [])
+    preds_dict = ss.get('preds_dict', {})
+    probs_dict = ss.get('probs_dict', {})
+    results = ss.get('results', [])
+
+    if st.button("Train & Compare Models"):
             models = {}
             if task_type == "Regression":
                 for m in chosen:
@@ -622,6 +635,22 @@ if uploaded_file is not None:
             st.subheader("Model Comparison")
             st.dataframe(results_df)
 
+            # persist outputs to session_state so UI survives reruns
+            try:
+                ss['fitted_models'] = fitted_models
+                ss['results_df'] = results_df
+                ss['model_stats'] = model_stats
+                ss['preds_dict'] = preds_dict
+                ss['probs_dict'] = probs_dict
+                ss['results'] = results
+                # default to showing full reports and select first model
+                if not ss.get('show_all_reports'):
+                    ss['show_all_reports'] = True
+                if 'sel_model' not in ss and not results_df.empty:
+                    ss['sel_model'] = results_df['Model'].iloc[0]
+            except Exception:
+                pass
+
             # Show richer comparison table
             if model_stats:
                 comp = pd.DataFrame(model_stats)
@@ -677,10 +706,11 @@ if uploaded_file is not None:
                 st.dataframe(metrics_df)
 
                 # Option to auto-show full report for all trained models
-                show_all_reports = st.checkbox('Show full report for all trained models')
+                show_all_reports = st.checkbox('Show full report for all trained models', value=ss.get('show_all_reports', True))
 
                 # Select a model for detailed report
-                sel = st.selectbox('Select model for detailed report', ['-- none --'] + metrics_df['Model'].tolist())
+                default_sel = ss.get('sel_model', '-- none --')
+                sel = st.selectbox('Select model for detailed report', ['-- none --'] + metrics_df['Model'].tolist(), index=(1 + metrics_df['Model'].tolist().index(default_sel) if default_sel in metrics_df['Model'].tolist() else 0))
 
                 def show_model_report(name):
                     y_pred_sel = preds_dict.get(name)
@@ -712,6 +742,7 @@ if uploaded_file is not None:
                             pass
 
                 if sel and sel != '-- none --':
+                    ss['sel_model'] = sel
                     show_model_report(sel)
 
                 if show_all_reports:
@@ -738,7 +769,7 @@ if uploaded_file is not None:
                         st.error(f"Failed to save model: {e}")
 
             # Load a saved model and run predictions
-            saved_models = [f for f in os.listdir('models') if f.endswith('.pkl')]
+            saved_models = [f for f in os.listdir('models') if f.endswith('.pkl')] if os.path.exists('models') else []
             if saved_models:
                 chosen_model = st.selectbox("Choose saved model to load", ["-- none --"] + saved_models)
                 if chosen_model and chosen_model != "-- none --":
@@ -840,14 +871,18 @@ if uploaded_file is not None:
                     except:
                         pass
 
-            if st.button("Download predictions (last trained model)"):
-                last_model = list(fitted_models.values())[-1]
-                y_pred = last_model.predict(X_test)
-                df_pred = X_test.copy()
-                df_pred['Actual'] = y_test
-                df_pred['Predicted'] = y_pred
-                csv_bytes = df_pred.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Predictions CSV", csv_bytes, file_name="predictions.csv", mime="text/csv")
+            # Always show download button for last trained model predictions when available
+            if fitted_models:
+                try:
+                    last_model = list(fitted_models.values())[-1]
+                    y_pred = last_model.predict(X_test)
+                    df_pred = X_test.copy()
+                    df_pred['Actual'] = y_test
+                    df_pred['Predicted'] = y_pred
+                    csv_bytes = df_pred.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download predictions (last trained model)", csv_bytes, file_name="predictions.csv", mime="text/csv")
+                except Exception:
+                    st.info('Could not prepare predictions for download')
 
     # ---------- Inferential Statistics
     with tabs[4]:
